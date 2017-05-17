@@ -1,0 +1,475 @@
+---
+title: "Arguing for a Negligible Effect"
+author: Seyoung Jung
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+spacing: double
+output:
+ pdf_document:
+   fig_caption: yes
+   fig_height: 7
+   fig_width: 7
+   keep_tex: yes
+   latex_engine: xelatex
+   number_sections: yes
+   template: /Users/seyoungjung/531-explorations/ps531template.latex
+---
+#Code Appendix
+
+Replication of the findings
+```{r}
+# Import data
+library(foreign)
+library(arm)
+library(plm)
+krup <- read.dta("/Users/seyoungjung/Desktop/data/krup.dta")
+krup <- na.omit(krup)
+
+# Testing hypothesis 3 (negativity by both target and timing has demobilizing effect)
+m <- glm(turnout ~ 
+           # negativity
+           negaboutdislike + negaboutlike +
+           # resources
+           income + education + age + unemployed +
+           # evaluation of parties and candidates
+           PIDStrength + AffectPID + care + AffectPRES +
+           # social involvement
+           lnYears + Church + homeowners + working + 
+           # mobilization
+           contacted + 
+           # interest, exposure, and efficacy
+           external + internal + interest + media_index + 
+           # other demographics
+           married + black + southern + hispanic + gender + 
+           # state conditions
+           closeness + governors + primaries + 
+           # volume and year controls
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, 
+         data = krup, family = "binomial") #it did not specify the link function here, but glm function uses logit as default link function for family=binomial
+summary(m)
+```
+```{r}
+# Change in likelihood of turnout due to an increase in negativity
+# Save mean and cov
+beta.hat <- coef(m)
+Sigma <- vcovHC(m, type = "HC0")
+# Simulate from the "posterior" using the CLT
+s <- mvrnorm(10000, beta.hat, Sigma)
+
+# a function to set all variables at their medians
+choose.x <- function(m) {
+  vars <- names(coefficients(m))[-1]
+  vals <- apply(m$data, 2, median, na.rm = TRUE)[vars]
+  vals <- c(1, vals)
+}
+## Compute first differences
+tab <- matrix(NA, nrow = 3, ncol = 1)
+colnames(tab) <- c("est")
+rownames(tab) <- c("0% to 20%", "0% to 40%", "0% to 60%")
+# set all variables to median
+x.lo <- x.hi <- choose.x(m)
+# change negaaboutdislike to zero
+x.lo["negaboutdislike"] <- 0
+s.lo <- plogis(s%*%x.lo)
+# change negaboutdislike to 0.2
+x.hi["negaboutdislike"] <- .2
+s.hi <- plogis(s%*%x.hi)
+s.d <- (s.hi - s.lo)
+q.d <- round(quantile(s.d, c(.5)), 3)
+tab[1, ] <- q.d
+# change negaboutdislike to 0.4
+x.hi["negaboutdislike"] <- .4
+s.hi <- plogis(s%*%x.hi)
+s.d <- (s.hi - s.lo)
+q.d <- round(quantile(s.d, c(.5)), 3)
+tab[2, ] <- q.d
+# change negaboutdislike to 0.6
+x.hi["negaboutdislike"] <- .6
+s.hi <- plogis(s%*%x.hi)
+s.d <- (s.hi - s.lo)
+q.d <- round(quantile(s.d, c(.5)), 3)
+tab[3, ] <- q.d
+print(tab)
+```
+p-values and confidence intervals
+```{r}
+# Fisher's approach to get p-values
+lmpv <- glm(turnout ~ 
+           negaboutdislike + negaboutlike +
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996,
+         data = krup, family = "binomial") # For now, I truncated the function, just for the sake of running permutations. I discuss the justification of decreasing the number of controls later in this paper. Still, I was trying not to change the direction of the effect, which was negative.
+coef(lmpv)[[2]]# -0.2987017
+# create a null world
+nullworld<-function(){
+  krup$shuffleto<-sample(krup$turnout)
+  coefnull<-coef(glm(shuffleto ~ 
+           negaboutdislike + negaboutlike +
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, 
+         data = krup, family = "binomial"))[["negaboutdislike"]]
+  return(coefnull)
+}
+set.seed(20170508)
+results_p<-replicate(10000,nullworld())
+mean(results_p) #-0.03289937, close to zero, which makes sense in a null world
+plot(density(results_p)) 
+curve(dnorm(x,sd=1,mean=0),from=-3,to=3,col="blue",add=TRUE)
+qqnorm(results_p)
+qqline(results_p) #CLT OK!
+table(results_p< (-0.2987017))
+# p-value is 0.3397, which is greater than conventional size of 0.05. This signifies that it is not unusual to observe the result.
+# confidence intervals using the randomized based test
+quantile(results_p, c(.025, .975))
+# 2.5 %: -1.394299, 97.5 %:1.269258  
+```
+Bias of estimators
+```{r}
+# create my truth as tau1, using the coefficient from the glm function used in the article.
+tau1<- coef(lmpv)[[2]]
+tau1 #-0.2987017
+krup$treat<-as.numeric(krup$negaboutdislike>0.5) #changing the treatment to binomial
+# creating potential outcomes
+krup$y0=ifelse(krup$treat%in%'0',krup$turnout,krup$turnout+tau1) #filling in post-treatment for those in control group
+krup$y1=ifelse(krup$treat%in%'1',krup$turnout,krup$turnout-tau1) #filling in pre-treatment for those in treatment group
+# Create a world of known effect of tau1, which has a distribution of possible coefficients.
+permuteFnb<-function(){
+  krup$newz<-sample(krup$treat)
+  krup$yobs<-krup$newz*krup$y0+(1-krup$newz)*krup$y1
+  meandiff<-coef(lm(yobs~newz+ negaboutlike + volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, data=krup))[["newz"]]
+  return(meandiff)
+}
+set.seed(20170508)
+result_bias<-replicate(1000,permuteFnb())
+mean(result_bias) #-0.2985196
+# comparing the average coefficient with tau1, to assess whether my estimator is biased or not, -0.2985196 seems similar to my truth.
+table(result_bias<tau1)
+# a p-value of .497, which is greater than conventional size of 0.05, signifies that it is not unusual to observe the truth.
+```
+Consistency of estimators
+```{r}
+# create a smaller data sample (decreasing it from 6214 to 4000)
+set.seed(20170508)
+data4000<-krup[sample(nrow(krup), 4000),]
+permuteFnc2<-function(){
+  data4000$newz<-sample(data4000$treat)
+  data4000$y4000<-data4000$newz*data4000$y0+(1-data4000$newz)*data4000$y1
+  meandiff<-coef(lm(y4000~newz+ negaboutlike + volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, data=data4000))[["newz"]]
+  return(meandiff)
+}
+result_con2<-replicate(1000,permuteFnc2())
+mean(result_con2) # the average coefficient is -0.2988664
+tau1-mean(result_con2) # difference with the tau: 0.0001647031
+
+# for a data sample of 6214, the average coefficient is -0.2985196 
+mean(result_bias)-tau1 # difference with the tau: 0.0001820796
+
+# create a larger data sample (enlarging it from 6214 to 10000) 
+set.seed(20170508)
+data10000<-krup[sample(nrow(krup), 10000, replace=TRUE),]
+permuteFnc1<-function(){
+  data10000$newz<-sample(data10000$treat)
+  data10000$y10000<-data10000$newz*data10000$y0+(1-data10000$newz)*data10000$y1
+  meandiff<-coef(lm(y10000~newz+ negaboutlike + volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, data=data10000))[["newz"]]
+  return(meandiff)
+}
+result_con1<-replicate(1000,permuteFnc1())
+mean(result_con1) # the average coefficient is -0.2985555
+mean(result_con1)-tau1 # difference with the tau: 0.0001461598
+
+# from 4000 to 6214, it became further from the truth, which is not consistent.
+# from 6214 to 10000, it did become closer to truth, which is consistent.
+```
+Type I error of tests
+```{r}
+# Type 1 error rate
+library(dplyr)
+library(parallel)
+library(mosaic)
+set.seed(20170508)
+errorT<-function(){
+  krup$shuffleto<-sample(krup$turnout)
+  pnull<-glm(shuffleto ~ 
+           negaboutdislike + negaboutlike +
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, 
+         data = krup, family = "binomial")
+  return(summary(pnull)$coef["negaboutdislike","Pr(>|z|)"])
+}
+dist1<-do(10000)*errorT()
+table(dist1<0.05) # Out of 10000 cases, we want p-values smaller than 0.05 to be about 500 times, in this case, there are 494.
+mean(dist1<0.05)
+# 0.0494
+# In the world of no effects, p-values smaller than 0.05 are those cases that reject the null hypothesis even when it might be true. We would want our type 1 error to be smaller than 0.05. In this case, our type 1 error, 0.0494 is smaller than 0.05.
+```
+Standard errors
+```{r}
+# an estimate of the standard error of the p-value, taking into account type 1 error.
+nsims<-100000
+sterror<-sqrt((dist1*(1-dist1))/nsims)
+summary(sterror)
+# standard errors are very small close to 0.
+```
+Power of tests
+```{r}
+library(dplyr)
+library(parallel)
+library(mosaic)
+repfnols<-function(H){
+  krup$shuffleto<-sample(krup$turnout)
+  sim_t<- glm(shuffleto ~ negaboutdislike + negaboutlike +
+          volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, 
+          data = krup, family = "binomial")
+  return(summary(sim_t)$coef["negaboutdislike","Pr(>|z|)"])
+}
+results_power<-do(10000)*repfnols(H=tau1)
+table(results_power<0.05) # Out of 10000 cases, we want p-values smaller than 0.05 to be about 500 times, in this case, there are 517.  
+1-mean(results_power<0.05)# 0.9483
+# the power of this test is 94.83%, which is very high
+```
+Two One-Sided Tests (TOST): P-values
+```{r}
+# Hr: treatment effect is between (-.3, .3)
+# H0: treatment effect is either -.3 to negative infinity or .3 to infinity
+krupcontrol<-krup[krup$treat==0,]
+kruptreated<-krup[krup$treat==1,]
+c1 <- t.test(krupcontrol$turnout, kruptreated$turnout, alt="g", mu= -.3)
+c1$p.value #4.460114e-209
+c2 <- t.test(krupcontrol$turnout, kruptreated$turnout, alt="l", mu= .3)
+c2$p.value #1.647578e-191
+pT <-max(c1$p.value, c2$p.value)
+pT
+# given the p-value of pT, 1.647578e-191, it is small enough to reject the null, which supports a negligible effect.
+```
+Two One-Sided Tests (TOST): Confidence Intervals
+```{r}
+# Save mean and cov
+beta.hat <- coef(m)
+Sigma <- vcovHC(m, type = "HC0")
+s <- mvrnorm(10000, beta.hat, Sigma)
+
+# a function to set all variables at their medians
+choose.x <- function(m) {
+  vars <- names(coefficients(m))[-1]
+  vals <- apply(m$data, 2, median, na.rm = TRUE)[vars]
+  vals <- c(1, vals)
+}
+
+## Compute first differences
+tab1 <- matrix(NA, nrow = 3, ncol = 3)
+colnames(tab1) <- c("est", "lwr", "upr")
+rownames(tab1) <- c("0% to 20%", "0% to 40%", "0% to 60%")
+
+# set all variables to median
+x.lo <- x.hi <- choose.x(m)
+# change negaaboutdislike to zero
+x.lo["negaboutdislike"] <- 0
+s.lo <- plogis(s%*%x.lo)
+
+# change negaboutdislike to 0.2
+x.hi["negaboutdislike"] <- .2
+s.hi <- plogis(s%*%x.hi)
+s.d <- (s.hi - s.lo)
+q.d <- round(quantile(s.d, c(.5, .05, .95)), 3) # 90% confidence intervals instead of 95%
+tab1[1, ] <- q.d
+
+# change negaboutdislike to 0.4
+x.hi["negaboutdislike"] <- .4
+s.hi <- plogis(s%*%x.hi)
+s.d <- (s.hi - s.lo)
+q.d <- round(quantile(s.d, c(.5, .05, .95)), 3) # 90% confidence intervals instead of 95%
+tab1[2, ] <- q.d
+
+# change negaboutdislike to 0.6
+x.hi["negaboutdislike"] <- .6
+s.hi <- plogis(s%*%x.hi)
+s.d <- (s.hi - s.lo)
+q.d <- round(quantile(s.d, c(.5, .05, .95)), 3) # 90% confidence intervals instead of 95%
+tab1[3, ] <- q.d
+
+print(tab1)
+```
+Perform many robustness checks
+```{r}
+set.seed(20170508)
+library(arm)
+library(sandwich)
+#Standard Error Estimate
+beta.hat <- coef(m)
+Sigma <- vcovHC(m, type = "HC0")
+s <- mvrnorm(10000, beta.hat, Sigma)
+choose.x <- function(m) {
+  vars <- names(coefficients(m))[-1]
+  vals <- apply(m$data, 2, median, na.rm = TRUE)[vars]
+  vals <- c(1, vals)
+}
+x.lo.1 <- x.hi.1 <- choose.x(m)
+x.lo.2 <- x.hi.2 <- choose.x(m)
+x.lo.1["negaboutdislike"] <- 0
+x.lo.2["negaboutlike"] <- 0
+s.lo.1 <- plogis(s%*%x.lo.1)
+s.lo.2 <- plogis(s%*%x.lo.2)
+x.hi.1["negaboutdislike"] <- 1
+x.hi.2["negaboutlike"] <- 1
+s.hi.1 <- plogis(s%*%x.hi.1)
+s.hi.2 <- plogis(s%*%x.hi.2)
+s.d.1 <- (s.hi.1 - s.lo.1)
+s.d.2 <- (s.hi.2 - s.lo.2)
+seqd1 <- quantile(s.d.1, c(.05, .5, .95)) 
+seqd2 <- quantile(s.d.2, c(.05, .5, .95)) 
+seqd1 # Standard Error Estimate
+seqd2 # Standard Error Estimate
+
+# Generate OLS results
+o <- lm(turnout ~ 
+           negaboutdislike + negaboutlike +
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, data = krup)
+beta.hat <- coef(o)
+Sigma <- vcovHC(o, type = "HC0")
+s <- mvrnorm(10000, beta.hat, Sigma)
+choose.x <- function(o) {
+  vars <- names(coefficients(o))[-1]
+  vals <- apply(m$data, 2, median, na.rm = TRUE)[vars]
+  vals <- c(1, vals)
+}
+x.lo.1 <- x.hi.1 <- choose.x(o)
+x.lo.2 <- x.hi.2 <- choose.x(o)
+x.lo.1["negaboutdislike"] <- 0
+x.lo.2["negaboutlike"] <- 0
+s.lo.1 <- plogis(s%*%x.lo.1)
+s.lo.2 <- plogis(s%*%x.lo.2)
+x.hi.1["negaboutdislike"] <- 1
+x.hi.2["negaboutlike"] <- 1
+s.hi.1 <- plogis(s%*%x.hi.1)
+s.hi.2 <- plogis(s%*%x.hi.2)
+s.d.1 <- (s.hi.1 - s.lo.1)
+s.d.2 <- (s.hi.2 - s.lo.2)
+olsqd1 <- quantile(s.d.1, c(.05, .5, .95)) 
+olsqd2 <- quantile(s.d.2, c(.05, .5, .95)) 
+olsqd1 # OLS Estimates and Std. Errors
+olsqd2 # OLS Estimates and Std. Errors
+
+# Generate robust regression
+r <- rlm(turnout ~ 
+           negaboutdislike + negaboutlike +
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, data = krup)
+beta.hat <- coef(r)
+Sigma <- vcovHC(r, type = "HC0")
+s <- mvrnorm(10000, beta.hat, Sigma)
+choose.x <- function(r) {
+  vars <- names(coefficients(r))[-1]
+  vals <- apply(r$data, 2, median, na.rm = TRUE)[vars]
+  vals <- c(1, vals)
+}
+x.lo.1["negaboutdislike"] <- 0
+x.lo.2["negaboutlike"] <- 0
+s.lo.1 <- plogis(s%*%x.lo.1)
+s.lo.2 <- plogis(s%*%x.lo.2)
+x.hi.1["negaboutdislike"] <- .6
+x.hi.2["negaboutlike"] <- .6
+s.hi.1 <- plogis(s%*%x.hi.1)
+s.hi.2 <- plogis(s%*%x.hi.2)
+s.d.1 <- (s.hi.1 - s.lo.1)
+s.d.2 <- (s.hi.2 - s.lo.2)
+rqd1 <- quantile(s.d.1, c(.05, .5, .95)) 
+rqd2 <- quantile(s.d.2, c(.05, .5, .95)) 
+rqd1 #Using M Estimator
+rqd2 #Using M Estimator
+
+## Obtain informal Bayesian posterior simulations using bootstrap
+#crop the data
+krupcrop <- krup[, c("turnout", "negaboutdislike", "negaboutlike", "volume2", "dummy1988", "dummy2000", "dummy1992", "dummy1996")]
+c <- glm(turnout ~ 
+           negaboutdislike + negaboutlike +
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996,
+         data = krupcrop, family = "binomial")
+library(MASS)
+n.bs <- 1000
+bs.sim <- matrix(NA, nrow = n.bs, ncol = length(coef(c)))
+
+for (i in 1:n.bs) {
+  bs.samp <- sample(1:nrow(krupcrop), nrow(krupcrop), replace = T)
+  bs.data <- krupcrop[bs.samp, ]
+  bs.est <- rlm(turnout ~ 
+           negaboutdislike + negaboutlike +
+           volume2 + dummy1988 + dummy2000 + dummy1992 + dummy1996, method = "M", data = krupcrop, maxit = 100000)
+  bs.sim[i, ] <- coef(bs.est)
+}
+s<-bs.sim
+
+choose.x <- function(c) {
+  vars <- names(coefficients(c))[-1]
+  vals <- apply(m$data, 2, median, na.rm = TRUE)[vars]
+  vals <- c(1, vals)
+}
+x.lo.1["negaboutdislike"] <- 0
+x.lo.2["negaboutlike"] <- 0
+s.lo.1 <- plogis(s%*%x.lo.1)
+s.lo.2 <- plogis(s%*%x.lo.2)
+x.hi.1["negaboutdislike"] <- 1
+x.hi.2["negaboutlike"] <- 1
+s.hi.1 <- plogis(s%*%x.hi.1)
+s.hi.2 <- plogis(s%*%x.hi.2)
+s.d.1 <- (s.hi.1 - s.lo.1)
+s.d.2 <- (s.hi.2 - s.lo.2)
+btqd1 <- quantile(s.d.1, c(.05, .5, .95)) 
+btqd2 <- quantile(s.d.2, c(.05, .5, .95)) 
+btqd1 # M Estimator with Boostrapped Std. Errors
+btqd2 # M Estimator with Boostrapped Std. Errors
+```
+
+```{r}
+# Create containers to store estimates and confidence intervals.
+est.negaboutdislike <- matrix(NA, nrow = 4, ncol = 3)
+dimnames(est.negaboutdislike) = list(c("Standard Error Estimate", "OLS Estimates and Std. Errors", "Using M Estimator", "M Estimator with Boostrapped Std. Errors"), c("5%", "50%", "95%"))
+est.negaboutdislike[1,]<-seqd1
+est.negaboutdislike[2,]<-olsqd1
+est.negaboutdislike[3,]<-rqd1
+est.negaboutdislike[4,]<-btqd1
+est.negaboutdislike
+
+est.negaboutlike <- matrix(NA, nrow=4, ncol=3)
+dimnames(est.negaboutlike) = list(c("Standard Error Estimate", "OLS Estimates and Std. Errors", "Using M Estimator", "M Estimator with Boostrapped Std. Errors"), c("5%", "50%", "95%"))
+est.negaboutlike[1,]<-seqd2
+est.negaboutlike[2,]<-olsqd2
+est.negaboutlike[3,]<-rqd2
+est.negaboutlike[4,]<-btqd2
+est.negaboutlike
+```
+```{r}
+library(compactr)
+pdf("/Users/seyoungjung/Desktop/data/cg.pdf", 
+           height = 4.5, width = 8, family = "serif")
+par(mfrow = c(1, 2), oma = c(3, .5, 1, .5), mar = c(1,1,1,1))
+# left panel - Disliked Candidate
+eplot(NULL, xlim = c(-0.3, 0.3), ylim = c(-.9, -.1), 
+      xat = c(-0.2, -0.1, 0, 0.1, 0.2),
+      anny = FALSE,
+      xlab = "Effect on Voter Turnout",
+      xlabpos = 2.5,
+      main = "Negative Campaigning on Disliked Candidate")
+abline(v = 0.1, xpd = FALSE, lty = 3)
+abline(v = -0.1, xpd = FALSE, lty = 3)
+for (i in 1:nrow(est.negaboutdislike)) {
+  est <- est.negaboutdislike
+  lines(c(est[i, 1], est[i, 3]), c(-i/(nrow(est) + 1), -i/(nrow(est) + 1)), lwd = 2) 
+  points(est[i, 2], -i/(nrow(est) + 1), pch = 19, cex = .7)
+  text(est[i, 2], -i/(nrow(est) + 1), rownames(est)[i], pos = 3, cex = .6)
+}
+
+# right panel - Liked Candidate
+eplot(NULL, xlim = c(-0.3, 0.3), ylim = c(-.9, -.1), 
+      xat = c(-0.2, -0.1, 0, 0.1, 0.2),
+      anny = FALSE,
+      xlab = "Effect on Voter Turnout",
+      xlabpos = 2.5,
+      main = "Negative Campaigning on Liked Candidate")
+abline(v = 0.1, xpd = FALSE, lty = 3)
+abline(v = -0.1, xpd = FALSE, lty = 3)
+for (i in 1:nrow(est.negaboutlike)) {
+  est <- est.negaboutlike
+  lines(c(est[i, 1], est[i, 3]), c(-i/(nrow(est) + 1), -i/(nrow(est) + 1)), lwd = 2) 
+  points(est[i, 2], -i/(nrow(est) + 1), pch = 19, cex = .7)
+  text(est[i, 2], -i/(nrow(est) + 1), rownames(est)[i], pos = 3, cex = .6)
+}
+dev.off()
+```
